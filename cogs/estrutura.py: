@@ -1,0 +1,320 @@
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+SEP_TEXTO = "┆"
+SEP_VOZ = "⟭⟬"
+SEP_CATEGORIA = "◈"
+
+# Tabela de cargos do Hive Craft: (nome, cor em hexadecimal), de cima para baixo.
+# O cargo do bot (Bzz) fica entre os dois grupos e não é criado aqui.
+CARGOS_ACIMA_DO_BOT = [
+    ("👑 Dono", "1E6730"),
+    ("🔱 Co-Dono", "227737"),
+    ("🛡️ Admin", "27863F"),
+]
+
+CARGOS_ABAIXO_DO_BOT = [
+    # Equipe
+    ("💻 Dev", "30A64E"),
+    ("🗡️ Moderador", "35B655"),
+    ("🏹 Moderador Júnior", "39C65C"),
+    ("🎧 Atendente", "49CA69"),
+    ("📋 Gerente de Parcerias", "5E35B1"),
+    ("🧱 Construtor", "59CF76"),
+    # Comunidade
+    ("🎬 Criador", "69D383"),
+    ("🍯 Apoiador", "79D890"),
+    ("🏰 Dono de Servidor Parceiro", "9575CD"),
+    ("🤝 Representante de Parceria", "7E57C2"),
+    ("📺 Criador Parceiro", "B39DDB"),
+    ("💼 Patrocinador", "D1C4E9"),
+    ("🥇 Top 1", "FFD700"),
+    ("🥈 Top 2", "C0C0C0"),
+    ("🥉 Top 3", "CD7F32"),
+    ("🏅 Top 10", "FFE082"),
+    ("🐉 Lenda", "88DD9D"),
+    ("💎 Veterano", "98E1AA"),
+    ("⛏️ Membro", "A8E6B7"),
+    # Punições do bot
+    ("⛔ Banido", "D50000"),
+    ("🚧 Suspenso", "D32F2F"),
+    ("🔇 Silenciado", "E53935"),
+    ("💸 Multado", "F4511E"),
+    ("⚠️ Aviso 3", "FF7043"),
+    ("⚠️ Aviso 2", "FFA726"),
+    ("⚠️ Aviso 1", "FFD54F"),
+    ("🔒 Em Análise", "FFF176"),
+    ("💤 Inativo", "90A4AE"),
+    # Cargos de escolha
+    ("☕ Java", "0277BD"),
+    ("🪨 Bedrock", "6D4C41"),
+    ("💻 PC", "1E88E5"),
+    ("📱 Mobile", "00ACC1"),
+    ("🎮 Console", "3949AB"),
+    ("🔔 Ping Novidades", "EC407A"),
+    ("🗳️ Ping Enquetes", "EC407A"),
+    ("🤝 Ping Parcerias", "EC407A"),
+    ("🎉 Ping Eventos", "EC407A"),
+    ("🎁 Ping Sorteios", "EC407A"),
+    ("🎵 Ping TikTok", "EC407A"),
+    ("🛠️ Ping Atualizações", "EC407A"),
+    ("💬 Ping Revive", "EC407A"),
+]
+
+
+def so_dono():
+    """Só o dono do servidor pode usar o comando."""
+    async def predicate(ctx: commands.Context) -> bool:
+        if ctx.guild is None or ctx.author.id != ctx.guild.owner_id:
+            raise commands.CheckFailure("Somente o dono do servidor pode usar este comando.")
+        return True
+    return commands.check(predicate)
+
+
+def parse_cor(texto: str):
+    try:
+        valor = int(texto.strip().lstrip("#"), 16)
+    except ValueError:
+        return None
+    return discord.Colour(valor) if 0 <= valor <= 0xFFFFFF else None
+
+
+def nome_texto(emoji: str, nome: str) -> str:
+    return f"{emoji.strip()}{SEP_TEXTO}{nome.strip().lower().replace(' ', '-')}"[:100]
+
+
+def nome_voz(emoji: str, nome: str) -> str:
+    return f"{emoji.strip()}{SEP_VOZ}{nome.strip()}"[:100]
+
+
+def nome_categoria(emoji: str, nome: str) -> str:
+    return f"{emoji.strip()} {SEP_CATEGORIA} {nome.strip()}"[:100]
+
+
+class Estrutura(commands.Cog):
+    """Cargos, canais e categorias do servidor (somente o dono)."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    # ---------- utilidades ----------
+    async def _tentar(self, ctx: commands.Context, coro):
+        try:
+            return True, await coro
+        except discord.Forbidden:
+            await ctx.send("Não tenho permissão para fazer isso.", ephemeral=True)
+        except discord.HTTPException as e:
+            await ctx.send(f"O Discord recusou o pedido: {e.text}", ephemeral=True)
+        return False, None
+
+    async def _enviar_blocos(self, ctx: commands.Context, linhas: list[str]):
+        sem_ping = discord.AllowedMentions.none()
+        bloco = ""
+        for linha in linhas:
+            if len(bloco) + len(linha) + 1 > 1900:
+                await ctx.send(bloco, ephemeral=True, allowed_mentions=sem_ping)
+                bloco = ""
+            bloco += linha + "\n"
+        if bloco:
+            await ctx.send(bloco, ephemeral=True, allowed_mentions=sem_ping)
+
+    def _erro_cargo(self, ctx: commands.Context, cargo: discord.Role):
+        if cargo.is_default():
+            return "Não dá para mexer no cargo @everyone."
+        if cargo.managed:
+            return "Esse cargo pertence a um bot ou integração e não pode ser alterado."
+        if cargo >= ctx.guild.me.top_role:
+            return "Esse cargo está acima (ou no mesmo nível) do cargo do bot. Arraste o cargo do bot para cima dele."
+        return None
+
+    # ---------- CARGOS ----------
+    @commands.hybrid_command(name="cargo_criar", description="Cria um cargo (cor em hexadecimal e nome).")
+    @app_commands.describe(cor="Cor em hexadecimal, ex: #1E6730", nome="Nome do cargo, com emote se quiser")
+    @so_dono()
+    @commands.bot_has_permissions(manage_roles=True)
+    async def cargo_criar(self, ctx: commands.Context, cor: str, *, nome: str):
+        colour = parse_cor(cor)
+        if colour is None:
+            return await ctx.send("Cor inválida. Use algo como `#1E6730`.", ephemeral=True)
+        ok, cargo = await self._tentar(
+            ctx, ctx.guild.create_role(name=nome[:100], colour=colour, reason=f"Criado por {ctx.author}")
+        )
+        if ok:
+            await ctx.send(
+                f"Cargo **{cargo.name}** criado. Arraste ele para a posição certa na lista de cargos.",
+                ephemeral=True,
+            )
+
+    @commands.hybrid_command(name="cargo_listar", description="Lista os cargos do servidor, do mais alto ao mais baixo.")
+    @so_dono()
+    async def cargo_listar(self, ctx: commands.Context):
+        await ctx.defer(ephemeral=True)
+        cargos = [r for r in reversed(ctx.guild.roles) if not r.is_default()]
+        linhas = [f"**{len(cargos)} cargos** (do mais alto ao mais baixo)"]
+        for r in cargos:
+            linhas.append(f"{r.position}. {r.name} · #{r.colour.value:06X} · {len(r.members)} membros")
+        await self._enviar_blocos(ctx, linhas)
+
+    @commands.hybrid_command(name="cargo_cor", description="Muda a cor de um cargo.")
+    @app_commands.describe(cargo="Cargo a alterar", cor="Nova cor, ex: #1E6730")
+    @so_dono()
+    @commands.bot_has_permissions(manage_roles=True)
+    async def cargo_cor(self, ctx: commands.Context, cargo: discord.Role, cor: str):
+        erro = self._erro_cargo(ctx, cargo)
+        if erro:
+            return await ctx.send(erro, ephemeral=True)
+        colour = parse_cor(cor)
+        if colour is None:
+            return await ctx.send("Cor inválida. Use algo como `#1E6730`.", ephemeral=True)
+        ok, _ = await self._tentar(ctx, cargo.edit(colour=colour))
+        if ok:
+            await ctx.send(f"Cor de **{cargo.name}** alterada.", ephemeral=True)
+
+    @commands.hybrid_command(name="cargo_renomear", description="Renomeia um cargo.")
+    @app_commands.describe(cargo="Cargo a alterar", nome="Novo nome")
+    @so_dono()
+    @commands.bot_has_permissions(manage_roles=True)
+    async def cargo_renomear(self, ctx: commands.Context, cargo: discord.Role, *, nome: str):
+        erro = self._erro_cargo(ctx, cargo)
+        if erro:
+            return await ctx.send(erro, ephemeral=True)
+        ok, _ = await self._tentar(ctx, cargo.edit(name=nome[:100]))
+        if ok:
+            await ctx.send(f"Cargo renomeado para **{nome[:100]}**.", ephemeral=True)
+
+    @commands.hybrid_command(name="cargo_apagar", description="Apaga um cargo.")
+    @app_commands.describe(cargo="Cargo a apagar")
+    @so_dono()
+    @commands.bot_has_permissions(manage_roles=True)
+    async def cargo_apagar(self, ctx: commands.Context, cargo: discord.Role):
+        erro = self._erro_cargo(ctx, cargo)
+        if erro:
+            return await ctx.send(erro, ephemeral=True)
+        nome = cargo.name
+        ok, _ = await self._tentar(ctx, cargo.delete(reason=f"Apagado por {ctx.author}"))
+        if ok:
+            await ctx.send(f"Cargo **{nome}** apagado.", ephemeral=True)
+
+    @commands.hybrid_command(name="cargos_tabela", description="Cria os cargos que faltam da tabela do Hive Craft e organiza a ordem.")
+    @so_dono()
+    @commands.bot_has_permissions(manage_roles=True)
+    async def cargos_tabela(self, ctx: commands.Context):
+        await ctx.defer(ephemeral=True)
+        guild = ctx.guild
+        existentes = {r.name: r for r in guild.roles}
+        ja_existiam, criados, falhas = 0, 0, []
+
+        for nome, cor in CARGOS_ACIMA_DO_BOT + CARGOS_ABAIXO_DO_BOT:
+            if nome in existentes:
+                ja_existiam += 1
+                continue
+            try:
+                existentes[nome] = await guild.create_role(
+                    name=nome,
+                    colour=discord.Colour(int(cor, 16)),
+                    mentionable="Ping" in nome,
+                    reason=f"Tabela de cargos por {ctx.author}",
+                )
+                criados += 1
+            except discord.HTTPException:
+                falhas.append(nome)
+
+        # Só dá para ordenar os cargos que ficam abaixo do cargo do bot
+        abaixo = [existentes[n] for n, _ in CARGOS_ABAIXO_DO_BOT if n in existentes]
+        posicoes = {role: len(abaixo) - i for i, role in enumerate(abaixo)}
+        aviso = ""
+        try:
+            await guild.edit_role_positions(positions=posicoes)
+        except discord.HTTPException:
+            aviso = "\n⚠️ Não consegui reorganizar a ordem. Coloque o cargo do bot acima dos outros e rode de novo."
+
+        msg = f"✅ {criados} cargos criados, {ja_existiam} já existiam."
+        if falhas:
+            msg += f"\n❌ Falharam: {', '.join(falhas)}"
+        msg += aviso
+        msg += (
+            "\nAgora arraste o cargo do bot para baixo de **🛡️ Admin** "
+            "e ajuste as permissões de cada cargo."
+        )
+        await ctx.send(msg, ephemeral=True)
+
+    # ---------- CATEGORIAS E CANAIS ----------
+    @commands.hybrid_command(name="categoria_criar", description="Cria uma categoria no modelo: emoji ◈ nome.")
+    @app_commands.describe(emoji="Emoji da categoria", nome="Nome da categoria")
+    @so_dono()
+    @commands.bot_has_permissions(manage_channels=True)
+    async def categoria_criar(self, ctx: commands.Context, emoji: str, *, nome: str):
+        ok, cat = await self._tentar(ctx, ctx.guild.create_category(nome_categoria(emoji, nome)))
+        if ok:
+            await ctx.send(f"Categoria criada: **{cat.name}**", ephemeral=True)
+
+    @commands.hybrid_command(name="canal_criar", description="Cria um canal de texto no modelo: emoji┆nome.")
+    @app_commands.describe(categoria="Categoria onde criar", emoji="Emoji do canal", nome="Nome do canal")
+    @so_dono()
+    @commands.bot_has_permissions(manage_channels=True)
+    async def canal_criar(self, ctx: commands.Context, categoria: discord.CategoryChannel, emoji: str, *, nome: str):
+        ok, canal = await self._tentar(
+            ctx, ctx.guild.create_text_channel(nome_texto(emoji, nome), category=categoria)
+        )
+        if ok:
+            await ctx.send(f"Canal criado: {canal.mention}", ephemeral=True)
+
+    @commands.hybrid_command(name="canal_voz_criar", description="Cria um canal de voz no modelo: emoji⟭⟬nome.")
+    @app_commands.describe(categoria="Categoria onde criar", emoji="Emoji do canal", nome="Nome do canal")
+    @so_dono()
+    @commands.bot_has_permissions(manage_channels=True)
+    async def canal_voz_criar(self, ctx: commands.Context, categoria: discord.CategoryChannel, emoji: str, *, nome: str):
+        ok, canal = await self._tentar(
+            ctx, ctx.guild.create_voice_channel(nome_voz(emoji, nome), category=categoria)
+        )
+        if ok:
+            await ctx.send(f"Canal de voz criado: **{canal.name}**", ephemeral=True)
+
+    @commands.hybrid_command(name="canal_renomear", description="Renomeia um canal ou categoria no modelo do servidor.")
+    @app_commands.describe(canal="Canal ou categoria", emoji="Novo emoji", nome="Novo nome")
+    @so_dono()
+    @commands.bot_has_permissions(manage_channels=True)
+    async def canal_renomear(self, ctx: commands.Context, canal: discord.abc.GuildChannel, emoji: str, *, nome: str):
+        if isinstance(canal, discord.CategoryChannel):
+            novo = nome_categoria(emoji, nome)
+        elif isinstance(canal, (discord.VoiceChannel, discord.StageChannel)):
+            novo = nome_voz(emoji, nome)
+        else:
+            novo = nome_texto(emoji, nome)
+        ok, _ = await self._tentar(ctx, canal.edit(name=novo))
+        if ok:
+            await ctx.send(f"Renomeado para **{novo}**", ephemeral=True)
+
+    @commands.hybrid_command(name="canal_apagar", description="Apaga um canal ou uma categoria vazia.")
+    @app_commands.describe(canal="Canal ou categoria a apagar")
+    @so_dono()
+    @commands.bot_has_permissions(manage_channels=True)
+    async def canal_apagar(self, ctx: commands.Context, canal: discord.abc.GuildChannel):
+        if isinstance(canal, discord.CategoryChannel) and canal.channels:
+            return await ctx.send(
+                "A categoria não está vazia. Apague ou mova os canais dela antes.", ephemeral=True
+            )
+        nome = canal.name
+        ok, _ = await self._tentar(ctx, canal.delete(reason=f"Apagado por {ctx.author}"))
+        if ok:
+            await ctx.send(f"Apagado: **{nome}**", ephemeral=True)
+
+    @commands.hybrid_command(name="estrutura", description="Mostra as categorias e os canais do servidor.")
+    @so_dono()
+    async def estrutura(self, ctx: commands.Context):
+        await ctx.defer(ephemeral=True)
+        guild = ctx.guild
+        linhas = []
+        for categoria in guild.categories:
+            linhas.append(f"**{categoria.name}**")
+            linhas += [f"  • {c.name}" for c in categoria.channels]
+        soltos = [c for c in guild.channels if c.category is None and not isinstance(c, discord.CategoryChannel)]
+        if soltos:
+            linhas.append("**Sem categoria**")
+            linhas += [f"  • {c.name}" for c in soltos]
+        await self._enviar_blocos(ctx, linhas or ["Nenhum canal."])
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Estrutura(bot))
