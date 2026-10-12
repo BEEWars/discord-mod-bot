@@ -38,6 +38,8 @@ async def on_command_error(ctx, error):
         await ctx.send("Você não tem permissão para usar esse comando.")
     elif isinstance(error, commands.BotMissingPermissions):
         await ctx.send("Eu não tenho permissão suficiente para fazer isso.")
+    elif isinstance(error, commands.CheckFailure):
+        await ctx.send(str(error) or "Você não pode usar esse comando.", ephemeral=True)
     elif isinstance(error, commands.CommandNotFound):
         return
     elif isinstance(error, commands.MissingRequiredArgument):
